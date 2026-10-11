@@ -16,6 +16,8 @@ AI-ассистент студента на базе Telegram-бота (Python 3
 Подробные условия заданий: `docs/labs/`.
 
 Исходный шаблон: https://github.com/K0DDO/uni-tg-bot  
+Рабочий репозиторий: https://github.com/K0DDO/M3215-ananenko  
+Целевая организация (после приглашения): https://github.com/ai-in-sd-y29/M3215-ananenko  
 Методичка: `docs/labs-guide.md`.
 
 ## Правила взаимодействия с ассистентом
