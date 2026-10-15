@@ -13,7 +13,7 @@ from app.handlers.commands import (
     cmd_study,
     on_temperature_callback,
 )
-from app.llm.client import LLMUnavailableError
+from app.llm.client import ChatResult, LLMUnavailableError
 from app.llm.prompts import STUDY_PROMPT, system_prompt_for
 from app.services.history import HistoryMessage, HistoryService, trim_history
 from app.services.messaging import (
@@ -44,11 +44,28 @@ def private_message(*, chat_id: int, text: str) -> MagicMock:
     message = MagicMock()
     message.chat.id = chat_id
     message.chat.type = "private"
+    message.message_id = 100
     message.text = text
     message.answer = AsyncMock()
     message.bot = MagicMock()
     message.bot.send_chat_action = AsyncMock()
     return message
+
+
+def no_tools() -> MagicMock:
+    toolbox = MagicMock()
+    toolbox.tools = []
+    toolbox.spec = MagicMock(return_value=None)
+    return toolbox
+
+
+def agent_services():
+    pending = AsyncMock()
+    pending.get_by_source = AsyncMock(return_value=None)
+    return (
+        patch("app.handlers.chat.PendingActionService", return_value=pending),
+        patch("app.handlers.chat.AuditService", return_value=AsyncMock()),
+    )
 
 
 @pytest.fixture
@@ -213,14 +230,17 @@ async def test_llm_error_becomes_safe_user_message():
     history.context_for_llm = AsyncMock(return_value=[])
     history.add_message = AsyncMock()
     llm = AsyncMock()
-    llm.complete = AsyncMock(side_effect=LLMUnavailableError("down"))
+    llm.chat = AsyncMock(side_effect=LLMUnavailableError("down"))
+    pending_patch, audit_patch = agent_services()
 
     with (
         patch("app.handlers.chat.UserService", return_value=users),
         patch("app.handlers.chat.HistoryService", return_value=history),
+        pending_patch,
+        audit_patch,
     ):
         # Act
-        await handle_private_text(message, object(), make_settings(), llm)  # type: ignore[arg-type]
+        await handle_private_text(message, object(), make_settings(), llm, no_tools())  # type: ignore[arg-type]
     # Assert
     status.edit_text.assert_awaited_once()
     assert status.edit_text.await_args.args[0] == USER_ERROR_UNAVAILABLE
@@ -276,21 +296,25 @@ async def test_private_text_calls_llm_with_active_mode_prompt():
     )
     history.add_message = AsyncMock()
     llm = AsyncMock()
-    llm.complete = AsyncMock(return_value="Краткое объяснение")
+    llm.chat = AsyncMock(return_value=ChatResult(content="Краткое объяснение"))
+    pending_patch, audit_patch = agent_services()
 
     with (
         patch("app.handlers.chat.UserService", return_value=users),
         patch("app.handlers.chat.HistoryService", return_value=history),
+        pending_patch,
+        audit_patch,
     ):
         # Act
-        await handle_private_text(message, object(), make_settings(), llm)  # type: ignore[arg-type]
+        await handle_private_text(message, object(), make_settings(), llm, no_tools())  # type: ignore[arg-type]
 
     # Assert
-    kwargs = llm.complete.await_args.kwargs
-    assert kwargs["system"] == STUDY_PROMPT
-    assert kwargs["temperature"] == 0.3
-    assert kwargs["user_text"] == "Что такое список?"
-    assert kwargs["history"][0]["role"] == "user"
+    messages = llm.chat.await_args.args[0]
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"].startswith(STUDY_PROMPT)
+    assert llm.chat.await_args.kwargs["temperature"] == 0.3
+    assert messages[-1] == {"role": "user", "content": "Что такое список?"}
+    assert messages[1]["role"] == "user"
     status_message.edit_text.assert_awaited_once()
     assert status_message.edit_text.await_args.args[0] == markdown_to_telegram_html(
         "Краткое объяснение"
@@ -321,7 +345,7 @@ async def test_dispatcher_sends_split_parts_in_order():
     long_text = "x" * 5000
     settings = make_settings()
     llm = AsyncMock()
-    llm.complete = AsyncMock(return_value=long_text)
+    llm.chat = AsyncMock(return_value=ChatResult(content=long_text))
     users = AsyncMock()
     users.get_or_create = AsyncMock(
         return_value=UserSettings(chat_id=42, mode="exam", temperature=0.7)
@@ -344,12 +368,15 @@ async def test_dispatcher_sends_split_parts_in_order():
         return status
 
     message.answer = fake_answer
+    pending_patch, audit_patch = agent_services()
 
     with (
         patch("app.handlers.chat.UserService", return_value=users),
         patch("app.handlers.chat.HistoryService", return_value=history),
+        pending_patch,
+        audit_patch,
     ):
-        await handle_private_text(message, object(), settings, llm)  # type: ignore[arg-type]
+        await handle_private_text(message, object(), settings, llm, no_tools())  # type: ignore[arg-type]
 
     assert sent[0][0] == long_text[:4096]
     assert sent[1][0] == long_text[4096:]

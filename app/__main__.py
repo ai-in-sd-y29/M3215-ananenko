@@ -1,9 +1,11 @@
 import argparse
 import asyncio
 import logging
+import secrets
 
 from aiogram import Dispatcher
 
+from app.agent.mcp_client import MCPToolbox, server_parameters, stdio_connector
 from app.config import ConfigError, Settings
 from app.db import create_pool, init_schema
 from app.handlers import router
@@ -19,6 +21,12 @@ async def run(settings: Settings) -> None:
     state = HealthState()
     bot = create_bot(settings)
     llm = LLMClient(settings)
+    # Секрет доверенного контекста знает только бот и его дочерний MCP-сервер.
+    owner_secret = secrets.token_urlsafe(32)
+    mcp = MCPToolbox(
+        stdio_connector(server_parameters(settings, owner_secret)),
+        call_timeout_seconds=settings.mcp_call_timeout_seconds,
+    )
     runner = None
     try:
         state.pool = await create_pool(settings)
@@ -33,6 +41,9 @@ async def run(settings: Settings) -> None:
                 "У бота установлен webhook. Удалите его перед запуском polling "
                 "или используйте отдельного учебного бота."
             )
+        await mcp.start()
+        if not mcp.available:
+            logger.warning("Бот работает без инструментов: MCP-сервер недоступен.")
         logger.info("Telegram доступен. Бот @%s запускает polling.", me.username)
         dispatcher = Dispatcher()
         dispatcher.include_router(router)
@@ -43,6 +54,8 @@ async def run(settings: Settings) -> None:
                 db=state.pool,
                 settings=settings,
                 llm=llm,
+                mcp=mcp,
+                owner_secret=owner_secret,
                 allowed_updates=dispatcher.resolve_used_update_types(),
                 close_bot_session=False,
             )
@@ -56,6 +69,7 @@ async def run(settings: Settings) -> None:
             await asyncio.gather(state.polling_task, return_exceptions=True)
         if runner:
             await runner.cleanup()
+        await mcp.stop()
         await llm.aclose()
         await bot.session.close()
         if state.pool:

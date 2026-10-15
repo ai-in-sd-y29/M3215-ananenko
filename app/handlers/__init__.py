@@ -1,8 +1,10 @@
 from aiogram import Router
 
-from app.handlers import chat, commands
+from app.handlers import agent_commands, chat, commands, reminders
 
-# Команды регистрируются раньше общего текстового обработчика.
-router = Router(name="lab1")
+# Команды и кнопки регистрируются раньше общего текстового обработчика.
+router = Router(name="assistant")
 router.include_router(commands.router)
+router.include_router(agent_commands.router)
+router.include_router(reminders.router)
 router.include_router(chat.router)

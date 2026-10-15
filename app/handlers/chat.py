@@ -1,9 +1,11 @@
 from aiogram import F, Router
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from asyncpg import Pool
 
+from app.agent.loop import Agent, AgentContext, confirmation_text
+from app.agent.mcp_client import MCPToolbox
 from app.config import Settings
 from app.llm.client import (
     LLMClient,
@@ -12,9 +14,10 @@ from app.llm.client import (
     LLMTimeoutError,
     LLMUnavailableError,
 )
-from app.llm.prompts import system_prompt_for
+from app.services.audit import AuditRecord, AuditService
 from app.services.history import HistoryService
 from app.services.messaging import prepare_telegram_parts, strip_markdown
+from app.services.pending import PendingActionService
 from app.services.users import UserService
 
 router = Router(name="chat")
@@ -27,6 +30,18 @@ USER_ERROR_UNAVAILABLE = (
 )
 USER_ERROR_EMPTY = "Модель вернула пустой ответ. Переформулируйте запрос или попробуйте снова."
 USER_ERROR_GENERIC = "Не удалось обработать запрос. Попробуйте позже."
+KNOWN_COMMANDS = "/start /study /translate /exam /settings /reset /tools /timezone /why /week"
+
+
+def confirm_keyboard(action_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Подтвердить", callback_data=f"rem:ok:{action_id}"),
+                InlineKeyboardButton(text="Отменить", callback_data=f"rem:no:{action_id}"),
+            ]
+        ]
+    )
 
 
 async def _send_answer_parts(status: Message, message: Message, answer: str) -> None:
@@ -47,22 +62,42 @@ async def _send_answer_parts(status: Message, message: Message, answer: str) -> 
             await message.answer(strip_markdown(part_text), parse_mode=None)
 
 
+LLM_ERRORS: list[tuple[type[LLMError], str, str]] = [
+    (LLMTimeoutError, USER_ERROR_TIMEOUT, "llm_timeout"),
+    (LLMEmptyResponseError, USER_ERROR_EMPTY, "llm_empty"),
+    (LLMUnavailableError, USER_ERROR_UNAVAILABLE, "llm_unavailable"),
+    (LLMError, USER_ERROR_GENERIC, "llm_error"),
+]
+
+
 @router.message(F.chat.type == "private", F.text)
 async def handle_private_text(
     message: Message,
     db: Pool,
     settings: Settings,
     llm: LLMClient,
+    mcp: MCPToolbox,
 ) -> None:
     text = (message.text or "").strip()
     if not text:
         return
     if text.startswith("/"):
         # Неизвестные команды не отправляем в модель.
-        await message.answer(
-            "Неизвестная команда. Доступны: /start /study /translate /exam /settings /reset",
-            parse_mode=None,
-        )
+        await message.answer(f"Неизвестная команда. Доступны: {KNOWN_COMMANDS}", parse_mode=None)
+        return
+
+    chat_id = message.chat.id
+    pending = PendingActionService(db)
+    source_key = f"{chat_id}:{message.message_id}"
+    existing = await pending.get_by_source(chat_id, source_key)
+    if existing is not None:
+        # Повторная доставка того же update: вторую операцию не готовим.
+        if existing.status == "pending":
+            await message.answer(
+                confirmation_text(existing.arguments, existing.timezone),
+                reply_markup=confirm_keyboard(existing.id),
+                parse_mode=None,
+            )
         return
 
     users = UserService(db)
@@ -71,33 +106,48 @@ async def handle_private_text(
         max_messages=settings.history_max_messages,
         max_chars=settings.history_max_chars,
     )
-    user = await users.get_or_create(message.chat.id)
-    context = await history.context_for_llm(message.chat.id, text)
-    system = system_prompt_for(user.mode)
+    audit = AuditService(db)
+    user = await users.get_or_create(chat_id)
+    context = await history.context_for_llm(chat_id, text)
+    ctx = AgentContext(
+        chat_id=chat_id,
+        source_key=source_key,
+        user_text=text,
+        mode=user.mode,
+        temperature=user.temperature,
+        timezone=user.timezone,
+        history=context,
+    )
+    agent = Agent(llm, mcp, pending, schedule_timezone=settings.schedule_timezone)
 
     status = await message.answer("Готовлю ответ…", parse_mode=None)
-    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-    await history.add_message(message.chat.id, "user", text)
+    await message.bot.send_chat_action(chat_id, ChatAction.TYPING)
+    await history.add_message(chat_id, "user", text)
 
     try:
-        answer = await llm.complete(
-            system=system,
-            history=context,
-            user_text=text,
-            temperature=user.temperature,
-        )
-    except LLMTimeoutError:
-        await status.edit_text(USER_ERROR_TIMEOUT, parse_mode=None)
-        return
-    except LLMEmptyResponseError:
-        await status.edit_text(USER_ERROR_EMPTY, parse_mode=None)
-        return
-    except LLMUnavailableError:
-        await status.edit_text(USER_ERROR_UNAVAILABLE, parse_mode=None)
-        return
-    except LLMError:
-        await status.edit_text(USER_ERROR_GENERIC, parse_mode=None)
-        return
+        result = await agent.run(ctx)
+    except LLMError as exc:
+        for error_type, user_text, code in LLM_ERRORS:
+            if isinstance(exc, error_type):
+                await audit.record(
+                    AuditRecord(
+                        chat_id=chat_id,
+                        request_id=ctx.request_id,
+                        action="error",
+                        validation_status="не выполнялась",
+                        execution_status=f"ошибка: {code}",
+                        reason="сервис модели не вернул решение",
+                    )
+                )
+                await status.edit_text(user_text, parse_mode=None)
+                return
+        raise
 
-    await history.add_message(message.chat.id, "assistant", answer)
-    await _send_answer_parts(status, message, answer)
+    await audit.record(result.audit)
+    await history.add_message(chat_id, "assistant", result.text)
+    if result.kind == "confirm" and result.pending is not None:
+        await status.edit_text(
+            result.text, reply_markup=confirm_keyboard(result.pending.id), parse_mode=None
+        )
+        return
+    await _send_answer_parts(status, message, result.text)
