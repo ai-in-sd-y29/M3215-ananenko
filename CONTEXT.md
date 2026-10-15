@@ -33,6 +33,7 @@ AI-ассистент студента на базе Telegram-бота (Python 3
 ## Текущее состояние репозитория
 
 - Telegram-бот Lab 1: режимы `/study`, `/translate`, `/exam`, история в PostgreSQL, OpenRouter LLM.
+- Lab 2: агент с собственным MCP-сервером (погода, расписание, напоминания с подтверждением), см. `AGENTS.md`, `spec.md`, `plan.md`.
 - Команды `/start`, `/settings`, `/reset`; разбиение длинных ответов; безопасные ошибки LLM.
 - PostgreSQL через asyncpg + схема `user_settings` / `dialog_messages`.
 - Docker Compose для локальной БД и облачного деплоя; GitHub Actions SSH-деплой.
@@ -49,14 +50,15 @@ AI-ассистент студента на базе Telegram-бота (Python 3
 - [x] Автотесты обязательных сценариев
 - [x] Эксперимент с temperature (12 запусков) + отчёт — `docs/labs/lab1-report.md`
 ### Lab 2
-- [ ] Собственный MCP-сервер: `get_weather`, `get_schedule`, `add_reminder` + ресурс `schedule://current-week`
-- [ ] MCP-клиент и агентный цикл (≤2 вызова на сообщение)
-- [ ] `/tools`, `/timezone`, `/why`
-- [ ] Подтверждение напоминаний, IANA timezone, идемпотентность
-- [ ] Аудит решений в PostgreSQL
-- [ ] `AGENTS.md`, `spec.md`, `plan.md`
-- [ ] Оценка маршрутизации по `docs/evaluation/lab2-routing.json`
-- [ ] Автотесты
+- [x] Собственный MCP-сервер `app/mcp_server/` (stdio): `get_weather` (Open-Meteo), `get_schedule` (`data/schedule.json`), `add_reminder` (PostgreSQL) + ресурс `schedule://current-week`
+- [x] MCP-клиент `app/agent/mcp_client.py` и агентный цикл `app/agent/loop.py` (tool calling, ≤2 вызова)
+- [x] `/tools`, `/timezone`, `/why`, `/week`
+- [x] Подтверждение напоминаний (TTL 5 мин), IANA timezone, идемпотентность, HMAC-токен владельца в `_meta`
+- [x] Аудит решений в PostgreSQL (`agent_audit`)
+- [x] `AGENTS.md`, `spec.md`, `plan.md`
+- [ ] Оценка маршрутизации: скрипт `scripts/evaluate_routing.py` готов, прогон отложен (локально нет `OPENROUTER_API_KEY`)
+- [x] Автотесты (131 + 3 интеграционных на PostgreSQL в CI)
+- [ ] Отчёт `docs/labs/lab2-report.md` — черновик без эксперимента; тег `lab2` не создан
 
 ### Lab 3 (черновик по доступным материалам)
 - [ ] Специализированные компоненты + маршрутизация запросов
