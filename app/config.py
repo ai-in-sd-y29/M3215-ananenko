@@ -3,8 +3,10 @@
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 from urllib.parse import urlsplit
+from zoneinfo import available_timezones
 
 from aiogram.utils.token import TokenValidationError, validate_token
 from dotenv import dotenv_values
@@ -17,6 +19,18 @@ class ConfigError(ValueError):
 ALLOWED_TEMPERATURES = (0.0, 0.3, 0.7, 1.0)
 DEFAULT_MODE = "study"
 MODES = ("study", "translate", "exam")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SCHEDULE_PATH = str(PROJECT_ROOT / "data" / "schedule.json")
+
+
+def is_valid_timezone(name: str) -> bool:
+    """IANA-зона из базы tzdata; смещения вида +03:00 и пути не принимаются."""
+    return bool(name) and name in _available_timezones()
+
+
+@cache
+def _available_timezones() -> frozenset[str]:
+    return frozenset(available_timezones())
 
 
 @dataclass(frozen=True)
@@ -36,6 +50,10 @@ class Settings:
     llm_timeout_seconds: float = 60.0
     history_max_messages: int = 20
     history_max_chars: int = 12_000
+    schedule_path: str = DEFAULT_SCHEDULE_PATH
+    schedule_timezone: str = "Europe/Moscow"
+    weather_timeout_seconds: float = 8.0
+    mcp_call_timeout_seconds: float = 25.0
 
     @classmethod
     def load(
@@ -114,6 +132,12 @@ class Settings:
         model = value("OPENROUTER_MODEL", "openai/gpt-4o-mini")
         if not model:
             raise ConfigError("OPENROUTER_MODEL: укажите имя модели OpenRouter.")
+        schedule_timezone = value("SCHEDULE_TIMEZONE", "Europe/Moscow")
+        if not is_valid_timezone(schedule_timezone):
+            raise ConfigError("SCHEDULE_TIMEZONE: нужна зона IANA, например Europe/Moscow.")
+        schedule_path = Path(value("SCHEDULE_PATH", DEFAULT_SCHEDULE_PATH))
+        if not schedule_path.is_absolute():
+            schedule_path = PROJECT_ROOT / schedule_path
         return cls(
             bot_token=token,
             postgres_password=password,
@@ -130,4 +154,8 @@ class Settings:
             llm_timeout_seconds=positive_float("LLM_TIMEOUT_SECONDS", "60"),
             history_max_messages=positive_int("HISTORY_MAX_MESSAGES", "20"),
             history_max_chars=positive_int("HISTORY_MAX_CHARS", "12000"),
+            schedule_path=str(schedule_path),
+            schedule_timezone=schedule_timezone,
+            weather_timeout_seconds=positive_float("WEATHER_TIMEOUT_SECONDS", "8"),
+            mcp_call_timeout_seconds=positive_float("MCP_CALL_TIMEOUT_SECONDS", "25"),
         )
