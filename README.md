@@ -105,6 +105,10 @@ bash scripts/start.sh --setup-only
 | `LLM_TIMEOUT_SECONDS`| Таймаут запроса к модели                               | `60`                                                     |
 | `HISTORY_MAX_MESSAGES` | Максимум сообщений истории в запросе к модели        | `20`                                                     |
 | `HISTORY_MAX_CHARS`  | Максимум символов истории в запросе к модели           | `12000`                                                  |
+| `SCHEDULE_PATH`      | Файл обезличенного расписания для MCP-сервера          | `data/schedule.json`                                     |
+| `SCHEDULE_TIMEZONE`  | IANA-зона расписания и ресурса недели                  | `Europe/Moscow`                                          |
+| `WEATHER_TIMEOUT_SECONDS` | Таймаут одного HTTP-запроса к Open-Meteo          | `8`                                                      |
+| `MCP_CALL_TIMEOUT_SECONDS` | Таймаут одного MCP-вызова                        | `25`                                                     |
 
 Примеры прокси с вымышленными адресами:
 
@@ -179,6 +183,39 @@ tests/              примеры тестов обвязки
 
 ```text
 docker build --platform linux/amd64 --no-cache -t itmo-tg-template-check .
+```
+
+## 6.1. Lab 2: агент и собственный MCP-сервер
+
+Правила проекта — `AGENTS.md`, спецификация — `spec.md`, план — `plan.md`.
+
+- MCP-сервер `app/mcp_server/` предоставляет инструменты `get_weather` (Open-Meteo, без ключа),
+  `get_schedule` (файл `SCHEDULE_PATH`), `add_reminder` (PostgreSQL) и ресурс
+  `schedule://current-week`. Транспорт — `stdio`: бот сам запускает сервер дочерним процессом
+  `python -m app.mcp_server`, сетевой порт не открывается.
+- Бот получает список инструментов через MCP discovery и выбирает действие нативным tool
+  calling OpenRouter. На одно сообщение — не более двух MCP-вызовов.
+- `add_reminder` выполняется только после кнопки «Подтвердить» (действует 5 минут). Владелец
+  передаётся серверу в `_meta.owner_token` — HMAC-подписи `{chat_id, action_id, timezone, exp}`
+  секретом, который бот генерирует при старте и передаёт только своему дочернему серверу.
+- Новые команды: `/tools`, `/timezone <IANA>`, `/why`, `/week`.
+
+Проверка сервера независимым клиентом (MCP Inspector, нужен Node.js):
+
+```powershell
+npx @modelcontextprotocol/inspector .\.venv\Scripts\python.exe -m app.mcp_server --env-file .env
+```
+
+В Inspector доступны `tools/list`, `resources/read schedule://current-week`, вызовы
+`get_weather` и `get_schedule`. Вызов `add_reminder` без доверенного контекста возвращает
+ожидаемый отказ `owner_missing`: секрет `MCP_OWNER_SECRET` в `.env` не хранится.
+
+Оценка маршрутизации на `docs/evaluation/lab2-routing.json` (нужен только `OPENROUTER_API_KEY`,
+результаты сохраняются в `docs/evaluation/results/`):
+
+```powershell
+python -m scripts.evaluate_routing --label baseline
+python -m scripts.evaluate_routing --label fix --cases weather_2,clarify_1
 ```
 
 ## 7. Первый деплой в Yandex Cloud
