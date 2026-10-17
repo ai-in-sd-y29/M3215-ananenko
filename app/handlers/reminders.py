@@ -35,7 +35,13 @@ async def on_reminder_callback(
     else:
         text = await service.cancel(message.chat.id, action_id)
     try:
-        await message.edit_text(text, reply_markup=None, parse_mode=None)
+        await message.edit_text(text, reply_markup=None, parse_mode="HTML")
     except TelegramBadRequest:
-        await message.answer(text, parse_mode=None)
+        try:
+            await message.edit_text(text, reply_markup=None, parse_mode=None)
+        except TelegramBadRequest:
+            try:
+                await message.answer(text, parse_mode="HTML")
+            except TelegramBadRequest:
+                await message.answer(text, parse_mode=None)
     await callback.answer()

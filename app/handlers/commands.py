@@ -1,4 +1,5 @@
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     CallbackQuery,
@@ -10,6 +11,7 @@ from asyncpg import Pool
 
 from app.config import ALLOWED_TEMPERATURES, Settings
 from app.llm.prompts import mode_title
+from app.services.formatting import start_message_html
 from app.services.history import HistoryService
 from app.services.users import UserService, parse_temperature
 
@@ -24,36 +26,27 @@ def _settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[row])
 
 
+async def _answer_html(message: Message, text: str) -> None:
+    try:
+        await message.answer(text, parse_mode="HTML")
+    except TelegramBadRequest:
+        await message.answer(text, parse_mode=None)
+
+
 async def _switch_mode(message: Message, db: Pool, mode: str) -> None:
     users = UserService(db)
     history = HistoryService(db, max_messages=1, max_chars=1)
     await history.clear(message.chat.id)
     await users.set_mode(message.chat.id, mode)
-    await message.answer(
-        f"Режим переключён: {mode_title(mode)}. История предыдущего режима очищена.",
-        parse_mode=None,
+    await _answer_html(
+        message,
+        f"<b>Режим переключён:</b> {mode_title(mode)}.\n<i>История предыдущего режима очищена.</i>",
     )
 
 
 @router.message(CommandStart(), F.chat.type == "private")
 async def cmd_start(message: Message) -> None:
-    text = (
-        "Я AI-ассистент студента.\n\n"
-        "Команды:\n"
-        "/study — объяснение учебных вопросов по программированию\n"
-        "/translate — перевод текста на указанный язык\n"
-        "/exam — экзаменатор: вопросы по теме и проверка ответов\n"
-        "/settings — режим, модель и temperature\n"
-        "/reset — очистить историю диалога\n"
-        "/tools — какие действия агент может выполнить через MCP-сервер\n"
-        "/timezone <зона> — часовой пояс для напоминаний, например Europe/Moscow\n"
-        "/why — почему агент выбрал действие в последнем запросе\n"
-        "/week — расписание на текущую неделю\n\n"
-        "Отправьте текстовое сообщение — отвечу в активном режиме "
-        "(по умолчанию /study). Могу узнать погоду, найти занятия на дату и "
-        "подготовить напоминание (создам его только после вашего подтверждения)."
-    )
-    await message.answer(text, parse_mode=None)
+    await _answer_html(message, start_message_html())
 
 
 @router.message(Command("study"), F.chat.type == "private")
@@ -79,9 +72,9 @@ async def cmd_reset(message: Message, db: Pool, settings: Settings) -> None:
         max_chars=settings.history_max_chars,
     )
     await history.clear(message.chat.id)
-    await message.answer(
-        "История диалога очищена. Режим и temperature сохранены.",
-        parse_mode=None,
+    await _answer_html(
+        message,
+        "<b>История диалога очищена.</b>\n<i>Режим и temperature сохранены.</i>",
     )
 
 
@@ -98,27 +91,31 @@ async def cmd_settings(
     if argument:
         temperature = parse_temperature(argument)
         if temperature is None:
-            await message.answer(
-                "Некорректное значение temperature. Допустимы: 0.0, 0.3, 0.7, 1.0.",
-                parse_mode=None,
+            await _answer_html(
+                message,
+                "<b>Некорректное значение temperature.</b>\n<i>Допустимы: 0.0, 0.3, 0.7, 1.0.</i>",
             )
             return
         user = await users.set_temperature(message.chat.id, temperature)
-        await message.answer(
-            f"Temperature обновлён: {user.temperature}. Применится со следующего запроса.",
-            parse_mode=None,
+        await _answer_html(
+            message,
+            f"<b>Temperature обновлён:</b> <code>{user.temperature}</code>.\n"
+            f"<i>Применится со следующего запроса.</i>",
         )
         return
 
     text = (
-        f"Текущие настройки:\n"
-        f"режим: {mode_title(user.mode)}\n"
-        f"модель: {settings.openrouter_model}\n"
-        f"temperature: {user.temperature}\n\n"
-        "Выберите temperature кнопкой или командой "
-        "/settings 0.0|0.3|0.7|1.0"
+        f"<b>Текущие настройки:</b>\n"
+        f"режим: <b>{mode_title(user.mode)}</b>\n"
+        f"модель: <code>{settings.openrouter_model}</code>\n"
+        f"temperature: <code>{user.temperature}</code>\n\n"
+        "<i>Выберите temperature кнопкой или командой</i>\n"
+        "<code>/settings 0.0|0.3|0.7|1.0</code>"
     )
-    await message.answer(text, reply_markup=_settings_keyboard(), parse_mode=None)
+    try:
+        await message.answer(text, reply_markup=_settings_keyboard(), parse_mode="HTML")
+    except TelegramBadRequest:
+        await message.answer(text, reply_markup=_settings_keyboard(), parse_mode=None)
 
 
 @router.callback_query(F.data.startswith("temp:"))
@@ -133,8 +130,15 @@ async def on_temperature_callback(callback: CallbackQuery, db: Pool) -> None:
         return
     users = UserService(db)
     user = await users.set_temperature(callback.message.chat.id, temperature)
-    await callback.message.answer(
-        f"Temperature обновлён: {user.temperature}. Применится со следующего запроса.",
-        parse_mode=None,
-    )
+    try:
+        await callback.message.answer(
+            f"<b>Temperature обновлён:</b> <code>{user.temperature}</code>.\n"
+            f"<i>Применится со следующего запроса.</i>",
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(
+            f"Temperature обновлён: {user.temperature}. Применится со следующего запроса.",
+            parse_mode=None,
+        )
     await callback.answer()

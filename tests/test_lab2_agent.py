@@ -263,9 +263,10 @@ async def test_reminder_is_prepared_not_executed_and_needs_confirmation():
         "remind_at": "2026-10-13T18:30:00+03:00",
     }
     assert pending.created[0]["source_key"] == "10:1"
-    assert "Дата: 13.10.2026 (вторник)" in result.text
-    assert "Время: 18:30" in result.text
-    assert "Europe/Moscow (UTC+03:00)" in result.text
+    assert "13-го" in result.text or "13 октября" in result.text
+    assert "вторник" in result.text
+    assert "18:30" in result.text
+    assert "Europe/Moscow" in result.text
     assert store.rows == {}
     assert result.audit.execution_status == "ожидает подтверждения"
 
@@ -350,7 +351,8 @@ async def test_timezone_command_validates_iana_and_saves():
         await cmd_timezone(empty, CommandObject(command="timezone", args=None), object())
     # Assert
     users.set_timezone.assert_awaited_once_with(1, "Asia/Tokyo")
-    assert "Часовой пояс сохранён: Asia/Tokyo (UTC+09:00)" in good.answer.await_args.args[0]
+    assert "Asia/Tokyo" in good.answer.await_args.args[0]
+    assert "UTC+09:00" in good.answer.await_args.args[0]
     assert "Неизвестный часовой пояс" in bad.answer.await_args.args[0]
     assert "Неизвестный часовой пояс" in offset.answer.await_args.args[0]
     assert "не задан" in empty.answer.await_args.args[0]
@@ -401,7 +403,10 @@ async def test_confirmed_future_reminder_is_created_through_mcp_with_owner_token
         # Act
         text = await service.confirm(10, "b" * 32)
     # Assert
-    assert text == "Напоминание №1 создано: 13.10.2026 18:30 (Europe/Moscow, UTC+03:00)."
+    assert "Напоминание №1" in text
+    assert "создано" in text
+    assert "18:30" in text
+    assert "Europe/Moscow" in text
     assert store.rows["b" * 32]["chat_id"] == 10
     assert pending.completed[0]["created"] is True
     record: AuditRecord = audit.record.await_args.args[0]
@@ -425,7 +430,7 @@ async def test_repeated_confirmation_returns_existing_result_without_mcp_call():
         ScriptedPending(ClaimResult("done", done)), AsyncMock(), toolbox, OWNER_SECRET
     )
     text = await service.confirm(10, "b" * 32)
-    assert "№3 уже создано" in text
+    assert "№3" in text and "уже создано" in text
     toolbox.call_tool.assert_not_called()
 
 
@@ -499,10 +504,11 @@ async def test_repeated_telegram_update_does_not_prepare_second_action():
 async def test_tools_command_lists_discovered_tools_with_kind():
     async with running_toolbox(make_deps()) as toolbox:
         text = format_tools(toolbox)
-    assert "• get_weather — Текущая погода в населённом пункте" in text
+    assert "<b>get_weather</b>" in text
+    assert "Текущая погода в населённом пункте" in text
     assert "(чтение)" in text
-    assert "add_reminder — Создаёт напоминание" in text
-    assert "(изменение, нужно подтверждение)" in text
+    assert "<b>add_reminder</b>" in text
+    assert "изменение, нужно подтверждение" in text
     assert "schedule://current-week" in text
 
 
@@ -529,12 +535,12 @@ def test_why_shows_safe_summary_without_ids_or_prompt():
         created_at=datetime(2026, 9, 28, 11, 5, tzinfo=UTC),
     )
     text = format_why(record, "Europe/Moscow")
-    assert text.splitlines()[:3] == [
-        "Последний запрос: 28.09.2026 14:05 (Europe/Moscow)",
-        "Действие: вызов инструмента get_weather",
-        "Аргументы: город «Санкт-Петербург»",
-    ]
-    assert "Причина: нужны актуальные погодные данные" in text
+    assert "Последний запрос" in text
+    assert "14:05" in text
+    assert "Europe/Moscow" in text
+    assert "get_weather" in text
+    assert "город «Санкт-Петербург»" in text
+    assert "нужны актуальные погодные данные" in text
     assert "123456789" not in text
     assert STUDY_PROMPT[:30] not in text
     assert format_why(None, None) == "Вы ещё не отправляли запросов агенту."

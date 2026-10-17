@@ -1,7 +1,8 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 from asyncpg import Pool
@@ -10,6 +11,11 @@ from app.agent.errors import MCPError, user_message
 from app.agent.mcp_client import MCPToolbox
 from app.config import is_valid_timezone
 from app.services.audit import AuditRecord, AuditService
+from app.services.formatting import (
+    format_human_datetime,
+    format_week_html,
+    tools_message_html,
+)
 from app.services.timezones import offset_label
 from app.services.users import UserService
 
@@ -31,6 +37,13 @@ ACTION_TITLES = {
 }
 
 
+async def _answer_html(message: Message, text: str) -> None:
+    try:
+        await message.answer(text, parse_mode="HTML")
+    except TelegramBadRequest:
+        await message.answer(text, parse_mode=None)
+
+
 def format_tools(mcp: MCPToolbox) -> str:
     tools = mcp.tools
     if not mcp.available or not tools:
@@ -45,7 +58,7 @@ def format_tools(mcp: MCPToolbox) -> str:
         lines.append("")
         lines.append("Ресурсы:")
         lines.extend(f"• {item.uri} — {item.description or item.name}" for item in resources)
-    return "\n".join(lines)
+    return tools_message_html(lines)
 
 
 def format_why(record: AuditRecord | None, tz_name: str | None) -> str:
@@ -53,45 +66,39 @@ def format_why(record: AuditRecord | None, tz_name: str | None) -> str:
         return "Вы ещё не отправляли запросов агенту."
     zone = ZoneInfo(tz_name) if tz_name else UTC
     created = (record.created_at or datetime.now(UTC)).astimezone(zone)
+    today = datetime.now(zone).date()
     action = ACTION_TITLES.get(record.action, record.action)
     if record.tool_name and record.action in {"call_tool", "rejected", "limit"}:
         action = f"{action} {record.tool_name}"
+    when = format_human_datetime(created, today=today)
     lines = [
-        f"Последний запрос: {created:%d.%m.%Y %H:%M} ({tz_name or 'UTC'})",
-        f"Действие: {action}",
+        f"<b>Последний запрос:</b> {when} <i>({tz_name or 'UTC'})</i>",
+        f"<b>Действие:</b> {action}",
     ]
     if record.args_summary:
-        lines.append(f"Аргументы: {record.args_summary}")
+        lines.append(f"<b>Аргументы:</b> {record.args_summary}")
     lines.extend(
         [
-            f"Проверка: {record.validation_status}",
-            f"Выполнение: {record.execution_status}",
-            f"Вызовов MCP: {record.mcp_calls}, длительность: {record.duration_ms} мс",
-            f"Причина: {record.reason or '—'}",
+            f"<b>Проверка:</b> {record.validation_status}",
+            f"<b>Выполнение:</b> {record.execution_status}",
+            f"<b>Вызовов MCP:</b> {record.mcp_calls}, <i>длительность: {record.duration_ms} мс</i>",
+            f"<b>Причина:</b> {record.reason or '—'}",
         ]
     )
     return "\n".join(lines)
 
 
-def format_week(data: dict) -> str:
-    lines = [
-        f"Расписание на неделю {data['week_start']} — {data['week_end']} ({data['timezone']}):"
-    ]
-    for day in data["days"]:
-        lines.append("")
-        lines.append(f"{day['weekday'].capitalize()}, {day['date']}:")
-        if not day["lessons"]:
-            lines.append("  занятий нет")
-        for lesson in day["lessons"]:
-            lines.append(
-                f"  {lesson['start']}–{lesson['end']} {lesson['title']}, {lesson['location']}"
-            )
-    return "\n".join(lines)
+def format_week(data: dict, *, today: date | None = None) -> str:
+    return format_week_html(data, today=today)
 
 
 @router.message(Command("tools"), F.chat.type == "private")
 async def cmd_tools(message: Message, mcp: MCPToolbox) -> None:
-    await message.answer(format_tools(mcp), parse_mode=None)
+    text = format_tools(mcp)
+    if text == TOOLS_UNAVAILABLE:
+        await message.answer(text, parse_mode=None)
+    else:
+        await _answer_html(message, text)
 
 
 @router.message(Command("timezone"), F.chat.type == "private")
@@ -101,24 +108,32 @@ async def cmd_timezone(message: Message, command: CommandObject, db: Pool) -> No
     if not argument:
         user = await users.get_or_create(message.chat.id)
         if user.timezone is None:
-            await message.answer(f"Часовой пояс не задан.\n{TIMEZONE_HINT}", parse_mode=None)
+            await _answer_html(
+                message,
+                f"<b>Часовой пояс не задан.</b>\n<i>{TIMEZONE_HINT}</i>",
+            )
             return
         now = datetime.now(ZoneInfo(user.timezone))
-        await message.answer(
-            f"Текущий часовой пояс: {user.timezone} ({offset_label(now)}). "
-            f"Местное время: {now:%d.%m.%Y %H:%M}.",
-            parse_mode=None,
+        await _answer_html(
+            message,
+            f"<b>Текущий часовой пояс:</b> <code>{user.timezone}</code> "
+            f"<i>({offset_label(now)})</i>.\n"
+            f"<b>Местное время:</b> {format_human_datetime(now, today=now.date())}.",
         )
         return
     if not is_valid_timezone(argument):
-        await message.answer(f"Неизвестный часовой пояс.\n{TIMEZONE_HINT}", parse_mode=None)
+        await _answer_html(
+            message,
+            f"<b>Неизвестный часовой пояс.</b>\n<i>{TIMEZONE_HINT}</i>",
+        )
         return
-    user = await users.set_timezone(message.chat.id, argument)
+    await users.set_timezone(message.chat.id, argument)
     now = datetime.now(ZoneInfo(argument))
-    await message.answer(
-        f"Часовой пояс сохранён: {argument} ({offset_label(now)}). "
-        f"Местное время: {now:%d.%m.%Y %H:%M}.",
-        parse_mode=None,
+    await _answer_html(
+        message,
+        f"<b>Часовой пояс сохранён:</b> <code>{argument}</code> "
+        f"<i>({offset_label(now)})</i>.\n"
+        f"<b>Местное время:</b> {format_human_datetime(now, today=now.date())}.",
     )
 
 
@@ -126,16 +141,25 @@ async def cmd_timezone(message: Message, command: CommandObject, db: Pool) -> No
 async def cmd_why(message: Message, db: Pool) -> None:
     user = await UserService(db).get_or_create(message.chat.id)
     record = await AuditService(db).latest(message.chat.id)
-    await message.answer(format_why(record, user.timezone), parse_mode=None)
+    text = format_why(record, user.timezone)
+    if record is None:
+        await message.answer(text, parse_mode=None)
+    else:
+        await _answer_html(message, text)
 
 
 @router.message(Command("week"), F.chat.type == "private")
-async def cmd_week(message: Message, mcp: MCPToolbox) -> None:
+async def cmd_week(message: Message, mcp: MCPToolbox, db: Pool) -> None:
     try:
         data = await mcp.read_resource(WEEK_RESOURCE_URI)
-        text = format_week(data)
+        user = await UserService(db).get_or_create(message.chat.id)
+        tz_name = user.timezone or data.get("timezone") or "Europe/Moscow"
+        today = datetime.now(ZoneInfo(tz_name)).date()
+        text = format_week(data, today=today)
+        await _answer_html(message, text)
+        return
     except MCPError as exc:
         text = user_message(exc.code) if exc.code != "mcp_unavailable" else TOOLS_UNAVAILABLE
-    except (KeyError, TypeError):
+    except (KeyError, TypeError, ValueError):
         text = user_message("bad_result")
     await message.answer(text, parse_mode=None)

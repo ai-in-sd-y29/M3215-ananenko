@@ -169,15 +169,22 @@ def summarize_arguments(name: str, arguments: dict[str, Any]) -> str:
 
 
 def confirmation_text(arguments: dict[str, Any], tz_name: str) -> str:
+    import html
+
+    from app.services.formatting import format_human_date
+
     moment = datetime.fromisoformat(arguments["remind_at"])
     minutes = CONFIRMATION_TTL_SECONDS // 60
+    human_date = format_human_date(moment)
+    text = html.escape(str(arguments["text"]))
     return (
-        "Создать напоминание?\n"
-        f"Текст: {arguments['text']}\n"
-        f"Дата: {moment:%d.%m.%Y} ({WEEKDAYS[moment.weekday()]})\n"
-        f"Время: {moment:%H:%M}\n"
-        f"Часовой пояс: {tz_name} ({offset_label(moment)})\n"
-        f"Подтверждение действует {minutes} минут."
+        "<b>Создать напоминание?</b>\n"
+        f"<b>Текст:</b> {text}\n"
+        f"<b>Дата:</b> {human_date} <i>({WEEKDAYS[moment.weekday()]})</i>\n"
+        f"<b>Время:</b> <i>{moment:%H:%M}</i>\n"
+        f"<b>Часовой пояс:</b> <code>{html.escape(tz_name)}</code> "
+        f"<i>({offset_label(moment)})</i>\n"
+        f"<i>Подтверждение действует {minutes} минут.</i>"
     )
 
 

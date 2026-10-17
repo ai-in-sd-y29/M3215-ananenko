@@ -51,11 +51,16 @@ def _valid_reminder_result(data: dict[str, Any]) -> bool:
 
 
 def created_text(result: dict[str, Any], *, repeated: bool) -> str:
+    from app.services.formatting import format_human_datetime
+
     moment = datetime.fromisoformat(result["remind_at"])
-    when = f"{moment:%d.%m.%Y %H:%M} ({result['timezone']}, {offset_label(moment)})"
+    when = f"{format_human_datetime(moment)} ({result['timezone']}, {offset_label(moment)})"
     if repeated or not result.get("created", True):
-        return f"Напоминание №{result['reminder_id']} уже создано: {when}. Повтор не выполнялся."
-    return f"Напоминание №{result['reminder_id']} создано: {when}."
+        return (
+            f"<b>Напоминание №{result['reminder_id']}</b> уже создано: "
+            f"<i>{when}</i>. Повтор не выполнялся."
+        )
+    return f"<b>Напоминание №{result['reminder_id']}</b> создано: <i>{when}</i>."
 
 
 STATUS_TEXTS = {

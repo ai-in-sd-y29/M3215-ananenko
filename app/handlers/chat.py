@@ -93,11 +93,12 @@ async def handle_private_text(
     if existing is not None:
         # Повторная доставка того же update: вторую операцию не готовим.
         if existing.status == "pending":
-            await message.answer(
-                confirmation_text(existing.arguments, existing.timezone),
-                reply_markup=confirm_keyboard(existing.id),
-                parse_mode=None,
-            )
+            text = confirmation_text(existing.arguments, existing.timezone)
+            keyboard = confirm_keyboard(existing.id)
+            try:
+                await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+            except TelegramBadRequest:
+                await message.answer(text, reply_markup=keyboard, parse_mode=None)
         return
 
     users = UserService(db)
@@ -156,6 +157,9 @@ async def handle_private_text(
                 await status.edit_text(result.text, parse_mode=None)
             except TelegramBadRequest:
                 pass
-        await message.answer(result.text, reply_markup=keyboard, parse_mode=None)
+        try:
+            await message.answer(result.text, reply_markup=keyboard, parse_mode="HTML")
+        except TelegramBadRequest:
+            await message.answer(result.text, reply_markup=keyboard, parse_mode=None)
         return
     await _send_answer_parts(status, message, result.text)
