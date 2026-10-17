@@ -62,8 +62,10 @@ class ResourceSpec:
 
 def tool_spec_from_mcp(tool: types.Tool) -> ToolSpec:
     annotations = tool.annotations
-    # Без явного readOnlyHint инструмент считается изменяющим и требует подтверждения.
-    read_only = bool(annotations and annotations.readOnlyHint)
+    # Без явного readOnlyHint=True инструмент считается изменяющим (нужно подтверждение).
+    read_only = bool(annotations is not None and annotations.readOnlyHint is True)
+    if tool.name == "add_reminder":
+        read_only = False
     return ToolSpec(
         name=tool.name,
         description=tool.description or tool.title or tool.name,

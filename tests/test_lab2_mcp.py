@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import pytest
 from aiohttp import web
@@ -208,9 +209,27 @@ async def test_schedule_invalid_date_is_rejected(raw):
 def test_repository_schedule_covers_two_weeks_without_personal_data():
     schedule = load_schedule("data/schedule.json")
     assert len(schedule.weeks) >= 2
-    first = schedule.lessons_on(date(2026, 10, 12))
-    second = schedule.lessons_on(date(2026, 10, 19))
-    assert first and second and first != second
+    # 19.10.2026 — понедельник нечётной недели; 26.10 — понедельник чётной.
+    odd_monday = schedule.lessons_on(date(2026, 10, 19))
+    even_monday = schedule.lessons_on(date(2026, 10, 26))
+    odd_thursday = schedule.lessons_on(date(2026, 10, 22))
+    even_thursday = schedule.lessons_on(date(2026, 10, 29))
+    assert odd_monday and even_monday and odd_monday == even_monday
+    assert odd_thursday == []  # фитнес в четверг на нечётной убран
+    assert any("Фитнес" in lesson.title for lesson in even_thursday)
+    assert any("История русской культуры" in lesson.title for lesson in even_thursday)
+    raw = Path("data/schedule.json").read_text(encoding="utf-8")
+    assert "Тертычный" not in raw and "Родикова" not in raw
+
+
+def test_relative_calendar_nearest_sunday_from_saturday():
+    from app.agent.loop import format_relative_calendar
+
+    calendar = format_relative_calendar(date(2026, 10, 17))
+    assert "сегодня: 2026-10-17 (суббота)" in calendar
+    assert "ближайший воскресенье: 2026-10-18" in calendar
+    assert "2026-10-23" not in calendar or "пятница" in calendar
+    assert "ближайший воскресенье: 2026-10-23" not in calendar
 
 
 # --- Ресурс недели ------------------------------------------------------------------

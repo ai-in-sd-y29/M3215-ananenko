@@ -146,8 +146,16 @@ async def handle_private_text(
     await audit.record(result.audit)
     await history.add_message(chat_id, "assistant", result.text)
     if result.kind == "confirm" and result.pending is not None:
-        await status.edit_text(
-            result.text, reply_markup=confirm_keyboard(result.pending.id), parse_mode=None
-        )
+        # Отдельное сообщение с inline-кнопками надёжнее edit «Готовлю ответ…»:
+        # у части клиентов Telegram markup после edit не показывается.
+        keyboard = confirm_keyboard(result.pending.id)
+        try:
+            await status.delete()
+        except TelegramBadRequest:
+            try:
+                await status.edit_text(result.text, parse_mode=None)
+            except TelegramBadRequest:
+                pass
+        await message.answer(result.text, reply_markup=keyboard, parse_mode=None)
         return
     await _send_answer_parts(status, message, result.text)

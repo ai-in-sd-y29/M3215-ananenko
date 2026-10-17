@@ -36,6 +36,24 @@ DATE_RANGE_DAYS = 366
 CLARIFY_TOOL_NAME = "ask_clarification"
 WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
 
+
+def format_relative_calendar(today: date) -> str:
+    """Явные ISO-даты для «сегодня/завтра/ближайший день недели» — модель не считает сама."""
+    lines = [
+        f"  - сегодня: {today.isoformat()} ({WEEKDAYS[today.weekday()]})",
+        f"  - завтра: {(today + timedelta(days=1)).isoformat()} "
+        f"({WEEKDAYS[(today.weekday() + 1) % 7]})",
+        f"  - послезавтра: {(today + timedelta(days=2)).isoformat()} "
+        f"({WEEKDAYS[(today.weekday() + 2) % 7]})",
+    ]
+    for weekday in range(7):
+        delta = (weekday - today.weekday()) % 7
+        day = today + timedelta(days=delta)
+        label = "сегодня" if delta == 0 else f"через {delta} дн."
+        lines.append(f"  - ближайший {WEEKDAYS[weekday]}: {day.isoformat()} ({label})")
+    return "\n".join(lines)
+
+
 CLARIFY_TOOL: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -209,6 +227,7 @@ class Agent:
             weekday=WEEKDAYS[local.weekday()],
             tz_label=tz_label,
             offset=local.strftime("%z")[:3] + ":" + local.strftime("%z")[3:],
+            calendar=format_relative_calendar(local.date()),
         )
         return f"{system_prompt_for(ctx.mode)}\n{rules}"
 
@@ -363,7 +382,9 @@ class Agent:
             spec = self._toolbox.spec(call.name)
             assert spec is not None
             summary = summarize_arguments(call.name, arguments)
-            if spec.needs_confirmation:
+            # Побочный эффект всегда через подтверждение, даже если annotation сбилась.
+            needs_confirm = spec.needs_confirmation or call.name == "add_reminder"
+            if needs_confirm:
                 if self._pending is None or ctx.timezone is None:
                     return finish(
                         "error",
@@ -502,7 +523,8 @@ def _validate_reminder(
         raise CallRejectedError(
             "invalid_datetime", "Не понял дату и время напоминания. Уточните их.", clarify=True
         ) from None
-    if moment <= now:
+    local_today = now.astimezone(ZoneInfo(tz_name)).date()
+    if moment.astimezone(ZoneInfo(tz_name)).date() < local_today or moment <= now:
         raise CallRejectedError(
             "remind_at_in_past", "Это время уже прошло. Укажите время в будущем.", clarify=True
         )

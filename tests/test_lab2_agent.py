@@ -114,6 +114,8 @@ async def test_model_sees_only_discovered_tools_and_current_context():
     assert system.startswith(STUDY_PROMPT)
     assert "2026-10-12 09:00 (понедельник)" in system
     assert "+03:00" in system
+    assert "ближайший воскресенье: 2026-10-18" in system
+    assert "завтра: 2026-10-13" in system
     assert result.audit.action == "respond"
     assert result.audit.mcp_calls == 0
 
